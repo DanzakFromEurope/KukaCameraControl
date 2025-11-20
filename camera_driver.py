@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import sys
 
+# Try importing neoapi
 try:
     import neoapi
 
@@ -22,7 +23,13 @@ class CameraHandler:
                 try:
                     self.camera = neoapi.Cam()
                     self.camera.Connect()
-                    self.camera.f.ExposureTime.Set(10000)  # Set exposure (adjustable)
+                    self.camera.f.ExposureTime.Set(10000)
+
+                    # FIX: Force the camera to send Mono8 (Grayscale) to be consistent
+                    # If your camera supports Color, you can change this to 'BGR8'
+                    if hasattr(self.camera.f, 'PixelFormat'):
+                        self.camera.f.PixelFormat.SetString('Mono8')
+
                     print("✅ Baumer Camera Connected.")
                 except Exception as e:
                     print(f"⚠️ Could not connect to Baumer Camera: {e}")
@@ -33,10 +40,7 @@ class CameraHandler:
                 self.use_simulation = True
 
         if self.use_simulation or source != "baumer":
-            # Fallback to Webcam (0) or a file
             self.cap = cv2.VideoCapture(0)
-            # If you want to test with a file, un-comment below:
-            # self.cap = cv2.VideoCapture('camera_image_14.png')
 
     def get_frame(self):
         """
@@ -44,37 +48,43 @@ class CameraHandler:
         """
         if not self.use_simulation and self.camera.IsConnected():
             try:
-                # Get image from Baumer
                 image = self.camera.GetImage()
-                # Convert to numpy array
                 img_np = image.GetNPArray()
 
-                # Baumer usually gives Mono8 (Grayscale) or Bayer.
-                # If Mono8, convert to BGR for YOLO
+                # --- SHAPE HANDLING FIX ---
+                # Case 1: Shape is (H, W) -> Simple Grayscale
                 if len(img_np.shape) == 2:
                     img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
-                else:
-                    # If BayerRG8, convert (adjust code based on your specific camera format)
-                    # img_np = cv2.cvtColor(img_np, cv2.COLOR_BayerBG2BGR)
-                    pass
+
+                # Case 2: Shape is (H, W, 1) -> Grayscale with explicit channel dim
+                elif len(img_np.shape) == 3 and img_np.shape[2] == 1:
+                    # Squeeze the last dimension to make it (H, W), then convert
+                    img_np = cv2.cvtColor(img_np.squeeze(-1), cv2.COLOR_GRAY2BGR)
+
+                # Case 3: Shape is (H, W, 3) -> Already Color (BGR or RGB)
+                # No action needed usually, unless Bayer pattern
+
                 return img_np
+
             except Exception as e:
                 print(f"Error grabbing Baumer frame: {e}")
                 return None
 
         elif self.cap:
-            # Webcam / File simulation
             ret, frame = self.cap.read()
             if not ret:
-                # Loop video if it ends
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 ret, frame = self.cap.read()
+
+            if frame is not None:
+                # Simulation: Color -> Gray -> BGR to match Industrial look
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                frame = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
             return frame
 
         return None
 
     def release(self):
-        if self.camera:
-            pass  # NeoAPI handles cleanup mostly, can add Disconnect() here
         if self.cap:
             self.cap.release()
