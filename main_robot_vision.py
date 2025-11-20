@@ -3,6 +3,7 @@ import numpy as np
 import threading
 import time
 import re
+import math
 from pynput import keyboard
 
 # Import our modules
@@ -12,7 +13,7 @@ import camera_driver
 import calibration_core
 
 # --- CONFIGURATION ---
-ROBOT_IP = '192.168.1.152'
+ROBOT_IP = '192.168.1.152'  # Corrected IP
 ROBOT_PORT = 7000
 YOLO_MODEL = 'best.pt'
 
@@ -62,8 +63,7 @@ def keyboard_listener():
                 jog_command = 'left'
             elif key == keyboard.Key.right:
                 jog_command = 'right'
-
-            # Z Movement (NEW)
+            # Z Movement
             elif key == keyboard.Key.page_up:
                 jog_command = 'z_up'
             elif key == keyboard.Key.page_down:
@@ -92,7 +92,6 @@ def keyboard_listener():
     def on_release(key):
         global jog_command, suction_active, blow_active, gripper_closed
 
-        # Stop Jogging (XY and Z)
         if key in [keyboard.Key.up, keyboard.Key.down, keyboard.Key.left, keyboard.Key.right,
                    keyboard.Key.page_up, keyboard.Key.page_down]:
             jog_command = None
@@ -155,7 +154,13 @@ def main():
     last_blow_state = False
     last_gripper_state = False
 
-    pick_cooldown = 0
+    # Variables for the Snapshot Logic
+    annotated_frame = None
+    best_cube_pixel = None
+    best_cube_robot = None
+    best_cube_rot = 0
+
+    settle_timer = 0
 
     while app_running:
         # --- 1. READ ROBOT STATUS ---
@@ -168,13 +173,12 @@ def main():
             if robot_is_busy:
                 is_working = robot.KUKA_ReadVar('doPick')
                 if is_working == False:
-                    print("✅ Robot finished task.")
+                    print("✅ Robot returned to home/drop position.")
                     robot_is_busy = False
-                    pick_cooldown = 30
+                    settle_timer = time.time() + 0.5
 
                     # --- 2. HANDLE MANUAL JOGGING ---
         if robot and robot.connected and not auto_mode:
-            # Tools
             if suction_active != last_suction_state:
                 robot.KUKA_WriteVar('vacuumOn', suction_active)
                 last_suction_state = suction_active
@@ -185,9 +189,7 @@ def main():
                 robot.KUKA_WriteVar('gripperClose', gripper_closed)
                 last_gripper_state = gripper_closed
 
-            # Jogging
             if jog_command != last_jog:
-                # Reset all flags first to avoid sticking
                 robot.KUKA_WriteVar('goUp', False)
                 robot.KUKA_WriteVar('goDown', False)
                 robot.KUKA_WriteVar('goLeft', False)
@@ -195,7 +197,6 @@ def main():
                 robot.KUKA_WriteVar('goZUp', False)
                 robot.KUKA_WriteVar('goZDown', False)
 
-                # Activate specific flag
                 if jog_command == 'up':
                     robot.KUKA_WriteVar('goUp', True)
                 elif jog_command == 'down':
@@ -205,88 +206,129 @@ def main():
                 elif jog_command == 'right':
                     robot.KUKA_WriteVar('goRight', True)
                 elif jog_command == 'z_up':
-                    robot.KUKA_WriteVar('goZUp', True)  # NEW
+                    robot.KUKA_WriteVar('goZUp', True)
                 elif jog_command == 'z_down':
-                    robot.KUKA_WriteVar('goZDown', True)  # NEW
+                    robot.KUKA_WriteVar('goZDown', True)
 
                 last_jog = jog_command
 
-        # --- 3. VISION PROCESSING ---
-        frame = cam.get_frame()
-        if frame is None: continue
+        # --- 3. VISION LOGIC ---
+        should_grab_frame = False
+        if not auto_mode:
+            should_grab_frame = True
+        elif auto_mode and not robot_is_busy and time.time() > settle_timer:
+            should_grab_frame = True
 
-        results = model.predict(frame, verbose=False)
+        if should_grab_frame:
+            frame = cam.get_frame()
+            if frame is not None:
+                results = model.predict(frame, verbose=False)
 
-        height, width = frame.shape[:2]
-        screen_center = (width // 2, height // 2)
-        best_cube_pixel = None
-        best_cube_robot = None
-        best_cube_rot = 0
-        min_dist = float('inf')
+                height, width = frame.shape[:2]
+                screen_center = (width // 2, height // 2)
+                best_cube_pixel = None
+                best_cube_robot = None
+                min_dist = float('inf')
 
-        annotated_frame = frame.copy()
+                annotated_frame = frame.copy()
 
-        # Status Overlay
-        status_color = (0, 255, 255) if auto_mode else (200, 200, 200)
-        cv2.putText(annotated_frame, f"MODE: {'AUTO' if auto_mode else 'MANUAL'}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
+                for result in results:
+                    obbs = result.obb
+                    if obbs is not None:
+                        for obb in obbs:
+                            box = obb.xywhr[0].cpu().numpy()
+                            cx, cy, w, h, rot = box  # rot is in Radians
+                            rot_deg = math.degrees(rot)
 
-        for result in results:
-            obbs = result.obb
-            if obbs is not None:
-                for obb in obbs:
-                    box = obb.xywhr[0].cpu().numpy()
-                    cx, cy, w, h, rot = box
-                    rot_deg = np.degrees(rot)
+                            # Draw Box
+                            rect_pts = cv2.boxPoints(((cx, cy), (w, h), rot_deg))
+                            rect_pts = np.int32(rect_pts)
+                            cv2.drawContours(annotated_frame, [rect_pts], 0, (0, 255, 0), 2)
 
-                    rect_pts = cv2.boxPoints(((cx, cy), (w, h), rot_deg))
-                    rect_pts = np.int32(rect_pts)
-                    cv2.drawContours(annotated_frame, [rect_pts], 0, (0, 255, 0), 2)
+                            # Draw Center
+                            cv2.circle(annotated_frame, (int(cx), int(cy)), 5, (0, 0, 255), -1)
 
-                    dist = np.sqrt((cx - screen_center[0]) ** 2 + (cy - screen_center[1]) ** 2)
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_cube_pixel = (cx, cy)
-                        best_cube_rot = rot_deg
+                            # --- VISUALIZATION RESTORED ---
+                            # Draw Orientation Line (Blue)
+                            line_len = 40
+                            end_x = int(cx + line_len * math.cos(rot))
+                            end_y = int(cy + line_len * math.sin(rot))
+                            cv2.line(annotated_frame, (int(cx), int(cy)), (end_x, end_y), (255, 0, 0), 2)
 
-                    if calib.is_calibrated:
-                        robot_coord = calib.pixel_to_robot(cx, cy)
-                        if robot_coord is not None:
-                            if dist == min_dist:
-                                best_cube_robot = robot_coord
-                            coord_text = f"X:{robot_coord[0]:.0f} Y:{robot_coord[1]:.0f}"
-                            cv2.putText(annotated_frame, coord_text, (int(cx), int(cy) - 30),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                            # Draw Angle Text
+                            angle_text = f"{int(rot_deg)} deg"
+                            cv2.putText(annotated_frame, angle_text, (int(cx), int(cy)),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
-        cv2.line(annotated_frame, (screen_center[0] - 20, screen_center[1]), (screen_center[0] + 20, screen_center[1]),
-                 (0, 0, 255), 1)
-        cv2.line(annotated_frame, (screen_center[0], screen_center[1] - 20), (screen_center[0], screen_center[1] + 20),
-                 (0, 0, 255), 1)
+                            # Find Best Cube Logic
+                            dist = np.sqrt((cx - screen_center[0]) ** 2 + (cy - screen_center[1]) ** 2)
+                            if dist < min_dist:
+                                min_dist = dist
+                                best_cube_pixel = (cx, cy)
+                                best_cube_rot = rot_deg
 
-        # --- 4. AUTO LOGIC ---
+                            # Draw Robot Coords (Cyan) if Calibrated
+                            if calib.is_calibrated:
+                                robot_coord = calib.pixel_to_robot(cx, cy)
+                                if robot_coord is not None:
+                                    if dist == min_dist:
+                                        best_cube_robot = robot_coord
+                                    coord_text = f"X:{robot_coord[0]:.0f} Y:{robot_coord[1]:.0f}"
+                                    cv2.putText(annotated_frame, coord_text, (int(cx), int(cy) - 30),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+                # Center Crosshair
+                cv2.line(annotated_frame, (screen_center[0] - 20, screen_center[1]),
+                         (screen_center[0] + 20, screen_center[1]), (0, 0, 255), 1)
+                cv2.line(annotated_frame, (screen_center[0], screen_center[1] - 20),
+                         (screen_center[0], screen_center[1] + 20), (0, 0, 255), 1)
+
+        # --- 4. DISPLAY ---
+        if annotated_frame is None:
+            annotated_frame = np.zeros((600, 800, 3), dtype=np.uint8)
+
+        display_img = annotated_frame.copy()
+
+        if auto_mode:
+            if robot_is_busy:
+                cv2.putText(display_img, "STATUS: ROBOT MOVING", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+            else:
+                cv2.putText(display_img, "STATUS: SCANNING...", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        else:
+            cv2.putText(display_img, "MODE: MANUAL", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+
+        if drop_off_pos:
+            cv2.putText(display_img, "DROP-OFF SET", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
+
+        # --- 5. AUTO LOGIC ---
         if auto_mode and robot and robot.connected and not robot_is_busy:
-            if pick_cooldown > 0:
-                pick_cooldown -= 1
-            elif calib.is_calibrated and drop_off_pos is not None and best_cube_robot is not None:
+            if should_grab_frame and calib.is_calibrated and drop_off_pos is not None:
+                if best_cube_robot is not None:
+                    target_x, target_y = best_cube_robot
+                    target_r = best_cube_rot
 
-                target_x, target_y = best_cube_robot
-                target_r = best_cube_rot
+                    print(f"🚀 Target Found: {target_x:.1f}, {target_y:.1f}, Angle {target_r:.1f}")
 
-                print(f"🚀 Sending Target: {target_x:.1f}, {target_y:.1f}, Angle {target_r:.1f}")
+                    pick_str = "{{X {:.2f}, Y {:.2f}, Z 0.0, A {:.2f}, B 0.0, C 180.0}}".format(
+                        target_x, target_y, target_r
+                    )
+                    drop_str = "{{X {:.2f}, Y {:.2f}, Z 0.0, A 0.0, B 0.0, C 180.0}}".format(
+                        drop_off_pos[0], drop_off_pos[1]
+                    )
 
-                pick_str = "{{X {:.2f}, Y {:.2f}, Z 0.0, A {:.2f}, B 0.0, C 180.0}}".format(
-                    target_x, target_y, target_r
-                )
-                drop_str = "{{X {:.2f}, Y {:.2f}, Z 0.0, A 0.0, B 0.0, C 180.0}}".format(
-                    drop_off_pos[0], drop_off_pos[1]
-                )
+                    robot.KUKA_WriteVar('pickPos', pick_str)
+                    robot.KUKA_WriteVar('dropPos', drop_str)
+                    robot.KUKA_WriteVar('doPick', True)
 
-                robot.KUKA_WriteVar('pickPos', pick_str)
-                robot.KUKA_WriteVar('dropPos', drop_str)
-                robot.KUKA_WriteVar('doPick', True)
-                robot_is_busy = True
+                    robot_is_busy = True
+                else:
+                    print("... No cubes detected.")
 
-        # --- 5. CALIBRATION ---
+        # --- 6. CALIBRATION ---
         if calibration_trigger:
             calibration_trigger = False
             if best_cube_pixel is None:
@@ -296,7 +338,7 @@ def main():
             else:
                 calib.add_point(best_cube_pixel, (current_robot_pos['x'], current_robot_pos['y']))
 
-        cv2.imshow("Robot Vision Control", annotated_frame)
+        cv2.imshow("Robot Vision Control", display_img)
         key = cv2.waitKey(1) & 0xFF
 
         if key == ord('m'):
