@@ -12,18 +12,13 @@ import camera_driver
 import calibration_core
 
 # --- CONFIGURATION ---
-ROBOT_IP = '192.168.1.153'
+ROBOT_IP = '192.168.1.152'
 ROBOT_PORT = 7000
 YOLO_MODEL = 'best.pt'
 
 # --- GLOBAL STATE ---
 current_robot_pos = {'x': 0.0, 'y': 0.0}
 jog_command = None
-
-# Automation State
-drop_off_pos = None  # Will store (x, y) tuple
-auto_mode = False  # Is the robot currently working alone?
-robot_is_busy = False  # Flag to wait for robot to finish move
 
 # Tool States
 suction_active = False
@@ -32,6 +27,9 @@ gripper_closed = False
 
 app_running = True
 calibration_trigger = False
+drop_off_pos = None
+auto_mode = False
+robot_is_busy = False
 
 
 # --- KUKA HELPER FUNCTIONS ---
@@ -55,6 +53,7 @@ def keyboard_listener():
     def on_press(key):
         global jog_command, calibration_trigger, blow_active, auto_mode, drop_off_pos
         try:
+            # XY Movement
             if key == keyboard.Key.up:
                 jog_command = 'up'
             elif key == keyboard.Key.down:
@@ -64,17 +63,22 @@ def keyboard_listener():
             elif key == keyboard.Key.right:
                 jog_command = 'right'
 
+            # Z Movement (NEW)
+            elif key == keyboard.Key.page_up:
+                jog_command = 'z_up'
+            elif key == keyboard.Key.page_down:
+                jog_command = 'z_down'
+
+            # Functional Keys
             elif hasattr(key, 'char'):
                 if key.char == 'c': calibration_trigger = True
                 if key.char == 'q': return False
                 if key.char == 'b': blow_active = True
 
-                # NEW: Set Drop-Off Point
                 if key.char == 'd':
                     drop_off_pos = (current_robot_pos['x'], current_robot_pos['y'])
                     print(f"✅ Drop-off Set: {drop_off_pos}")
 
-                # NEW: Toggle Auto Mode
                 if key.char == 'a':
                     if drop_off_pos is None:
                         print("⚠️ Cannot start Auto Mode: Set Drop-off ('D') first!")
@@ -88,19 +92,18 @@ def keyboard_listener():
     def on_release(key):
         global jog_command, suction_active, blow_active, gripper_closed
 
-        if key in [keyboard.Key.up, keyboard.Key.down, keyboard.Key.left, keyboard.Key.right]:
+        # Stop Jogging (XY and Z)
+        if key in [keyboard.Key.up, keyboard.Key.down, keyboard.Key.left, keyboard.Key.right,
+                   keyboard.Key.page_up, keyboard.Key.page_down]:
             jog_command = None
 
         if key == keyboard.Key.esc:
             return False
 
         if hasattr(key, 'char'):
-            if key.char == 's':
-                suction_active = not suction_active
-            if key.char == 'b':
-                blow_active = False
-            if key.char == 'g':
-                gripper_closed = not gripper_closed
+            if key.char == 's': suction_active = not suction_active
+            if key.char == 'b': blow_active = False
+            if key.char == 'g': gripper_closed = not gripper_closed
 
     with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
         listener.join()
@@ -139,40 +142,37 @@ def main():
     kb_thread.start()
 
     print("\n--- SYSTEM READY ---")
-    print("  ARROWS : Jog Robot")
-    print("  'D'    : Set DROP-OFF Location (Jog to bin, press D)")
-    print("  'A'    : Start/Stop AUTO PICK & PLACE")
-    print("  'C'    : Record Calibration Point")
-    print("  'M'    : Calculate Matrix")
-    print("  'Q'    : Quit")
+    print("  ARROWS    : Jog X/Y")
+    print("  PgUp/PgDn : Jog Z (Height)")
+    print("  'D'       : Set DROP-OFF Location")
+    print("  'A'       : Start/Stop AUTO MODE")
+    print("  'C'       : Record Calibration Point")
+    print("  'M'       : Calculate Matrix")
+    print("  'Q'       : Quit")
 
     last_jog = None
     last_suction_state = False
     last_blow_state = False
     last_gripper_state = False
 
-    # Cooldown to prevent picking the same cube twice instantly
     pick_cooldown = 0
 
     while app_running:
         # --- 1. READ ROBOT STATUS ---
         if robot and robot.connected:
-            # Always update current position
             raw_pos = robot.KUKA_ReadVar('$POS_ACT')
             x, y = parse_kuka_pos(raw_pos)
             current_robot_pos['x'] = x
             current_robot_pos['y'] = y
 
-            # Check if robot finished the previous task
-            # We assume KUKA sets 'doPick' to FALSE when it finishes
             if robot_is_busy:
                 is_working = robot.KUKA_ReadVar('doPick')
                 if is_working == False:
-                    print("✅ Robot finished task. Ready for next.")
+                    print("✅ Robot finished task.")
                     robot_is_busy = False
-                    pick_cooldown = 30  # Wait 30 frames before next pick (stabilize)
+                    pick_cooldown = 30
 
-        # --- 2. HANDLE MANUAL JOGGING (Only if NOT in Auto Mode) ---
+                    # --- 2. HANDLE MANUAL JOGGING ---
         if robot and robot.connected and not auto_mode:
             # Tools
             if suction_active != last_suction_state:
@@ -187,6 +187,15 @@ def main():
 
             # Jogging
             if jog_command != last_jog:
+                # Reset all flags first to avoid sticking
+                robot.KUKA_WriteVar('goUp', False)
+                robot.KUKA_WriteVar('goDown', False)
+                robot.KUKA_WriteVar('goLeft', False)
+                robot.KUKA_WriteVar('goRight', False)
+                robot.KUKA_WriteVar('goZUp', False)
+                robot.KUKA_WriteVar('goZDown', False)
+
+                # Activate specific flag
                 if jog_command == 'up':
                     robot.KUKA_WriteVar('goUp', True)
                 elif jog_command == 'down':
@@ -195,11 +204,11 @@ def main():
                     robot.KUKA_WriteVar('goLeft', True)
                 elif jog_command == 'right':
                     robot.KUKA_WriteVar('goRight', True)
-                else:
-                    robot.KUKA_WriteVar('goUp', False)
-                    robot.KUKA_WriteVar('goDown', False)
-                    robot.KUKA_WriteVar('goLeft', False)
-                    robot.KUKA_WriteVar('goRight', False)
+                elif jog_command == 'z_up':
+                    robot.KUKA_WriteVar('goZUp', True)  # NEW
+                elif jog_command == 'z_down':
+                    robot.KUKA_WriteVar('goZDown', True)  # NEW
+
                 last_jog = jog_command
 
         # --- 3. VISION PROCESSING ---
@@ -219,12 +228,8 @@ def main():
 
         # Status Overlay
         status_color = (0, 255, 255) if auto_mode else (200, 200, 200)
-        cv2.putText(annotated_frame, f"MODE: {'AUTO-PILOT' if auto_mode else 'MANUAL'}", (10, 30),
+        cv2.putText(annotated_frame, f"MODE: {'AUTO' if auto_mode else 'MANUAL'}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
-
-        if drop_off_pos:
-            cv2.putText(annotated_frame, "DROP-OFF SET", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
 
         for result in results:
             obbs = result.obb
@@ -238,7 +243,6 @@ def main():
                     rect_pts = np.int32(rect_pts)
                     cv2.drawContours(annotated_frame, [rect_pts], 0, (0, 255, 0), 2)
 
-                    # Find closest to center
                     dist = np.sqrt((cx - screen_center[0]) ** 2 + (cy - screen_center[1]) ** 2)
                     if dist < min_dist:
                         min_dist = dist
@@ -248,10 +252,8 @@ def main():
                     if calib.is_calibrated:
                         robot_coord = calib.pixel_to_robot(cx, cy)
                         if robot_coord is not None:
-                            # Save the robot coord of the BEST cube
                             if dist == min_dist:
                                 best_cube_robot = robot_coord
-
                             coord_text = f"X:{robot_coord[0]:.0f} Y:{robot_coord[1]:.0f}"
                             cv2.putText(annotated_frame, coord_text, (int(cx), int(cy) - 30),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
@@ -267,29 +269,24 @@ def main():
                 pick_cooldown -= 1
             elif calib.is_calibrated and drop_off_pos is not None and best_cube_robot is not None:
 
-                # We found a cube, we are calibrated, we have a drop zone, and robot is idle
                 target_x, target_y = best_cube_robot
                 target_r = best_cube_rot
 
                 print(f"🚀 Sending Target: {target_x:.1f}, {target_y:.1f}, Angle {target_r:.1f}")
 
-                # 1. Write Target Coords
-                robot.KUKA_WriteVar('target_x', target_x)
-                robot.KUKA_WriteVar('target_y', target_y)
-                robot.KUKA_WriteVar('target_r', target_r)
+                pick_str = "{{X {:.2f}, Y {:.2f}, Z 0.0, A {:.2f}, B 0.0, C 180.0}}".format(
+                    target_x, target_y, target_r
+                )
+                drop_str = "{{X {:.2f}, Y {:.2f}, Z 0.0, A 0.0, B 0.0, C 180.0}}".format(
+                    drop_off_pos[0], drop_off_pos[1]
+                )
 
-                # 2. Write Drop Coords (Just in case they changed)
-                robot.KUKA_WriteVar('drop_x', drop_off_pos[0])
-                robot.KUKA_WriteVar('drop_y', drop_off_pos[1])
-
-                # 3. TRIGGER MOVEMENT
+                robot.KUKA_WriteVar('pickPos', pick_str)
+                robot.KUKA_WriteVar('dropPos', drop_str)
                 robot.KUKA_WriteVar('doPick', True)
-
-                # 4. Set busy flag
                 robot_is_busy = True
-                print("⏳ Waiting for robot to finish...")
 
-        # --- 5. CALIBRATION LOGIC ---
+        # --- 5. CALIBRATION ---
         if calibration_trigger:
             calibration_trigger = False
             if best_cube_pixel is None:
