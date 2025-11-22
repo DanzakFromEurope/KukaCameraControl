@@ -13,7 +13,7 @@ import camera_driver
 import calibration_core
 
 # --- CONFIGURATION ---
-ROBOT_IP = '192.168.1.152'  # Corrected IP
+ROBOT_IP = '192.168.1.152'
 ROBOT_PORT = 7000
 YOLO_MODEL = 'best.pt'
 
@@ -54,34 +54,41 @@ def keyboard_listener():
     def on_press(key):
         global jog_command, calibration_trigger, blow_active, auto_mode, drop_off_pos
         try:
-            # XY Movement
-            if key == keyboard.Key.up:
-                jog_command = 'up'
-            elif key == keyboard.Key.down:
-                jog_command = 'down'
-            elif key == keyboard.Key.left:
-                jog_command = 'left'
-            elif key == keyboard.Key.right:
-                jog_command = 'right'
-            # Z Movement
-            elif key == keyboard.Key.page_up:
-                jog_command = 'z_up'
-            elif key == keyboard.Key.page_down:
-                jog_command = 'z_down'
+            # Check for character keys
+            if hasattr(key, 'char'):
+                char = key.char.lower()
 
-            # Functional Keys
-            elif hasattr(key, 'char'):
-                if key.char == 'c': calibration_trigger = True
-                if key.char == 'q': return False
-                if key.char == 'b': blow_active = True
+                # --- MOVEMENT (WASD + QE) ---
+                if char == 'w':
+                    jog_command = 'up'  # Forward
+                elif char == 's':
+                    jog_command = 'down'  # Backward
+                elif char == 'a':
+                    jog_command = 'left'  # Left
+                elif char == 'd':
+                    jog_command = 'right'  # Right
+                elif char == 'q':
+                    jog_command = 'z_up'  # Up (Height)
+                elif char == 'e':
+                    jog_command = 'z_down'  # Down (Height)
 
-                if key.char == 'd':
+                # --- TOOLS ---
+                elif char == 'b':
+                    blow_active = True
+
+                # --- FUNCTIONAL ---
+                elif char == 'c':
+                    calibration_trigger = True
+
+                # 'x' to set Drop-off (Moved from 'd')
+                elif char == 'x':
                     drop_off_pos = (current_robot_pos['x'], current_robot_pos['y'])
                     print(f"✅ Drop-off Set: {drop_off_pos}")
 
-                if key.char == 'a':
+                # 'Space' for Auto Mode (Moved from 'a')
+                elif char == ' ':
                     if drop_off_pos is None:
-                        print("⚠️ Cannot start Auto Mode: Set Drop-off ('D') first!")
+                        print("⚠️ Cannot start Auto Mode: Set Drop-off ('X') first!")
                     else:
                         auto_mode = not auto_mode
                         print(f"🤖 Auto Mode: {'ON' if auto_mode else 'OFF'}")
@@ -92,17 +99,25 @@ def keyboard_listener():
     def on_release(key):
         global jog_command, suction_active, blow_active, gripper_closed
 
-        if key in [keyboard.Key.up, keyboard.Key.down, keyboard.Key.left, keyboard.Key.right,
-                   keyboard.Key.page_up, keyboard.Key.page_down]:
-            jog_command = None
+        # Stop Jogging if any move key is released
+        if hasattr(key, 'char'):
+            char = key.char.lower()
+            if char in ['w', 's', 'a', 'd', 'q', 'e']:
+                jog_command = None
+
+            # Toggle Suction ('v' instead of 's')
+            if char == 'v':
+                suction_active = not suction_active
+                print(f"💨 Suction: {'ON' if suction_active else 'OFF'}")
+
+            if char == 'b': blow_active = False
+
+            if char == 'g':
+                gripper_closed = not gripper_closed
+                print(f"✊ Gripper: {'CLOSED' if gripper_closed else 'OPEN'}")
 
         if key == keyboard.Key.esc:
             return False
-
-        if hasattr(key, 'char'):
-            if key.char == 's': suction_active = not suction_active
-            if key.char == 'b': blow_active = False
-            if key.char == 'g': gripper_closed = not gripper_closed
 
     with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
         listener.join()
@@ -141,20 +156,22 @@ def main():
     kb_thread.start()
 
     print("\n--- SYSTEM READY ---")
-    print("  ARROWS    : Jog X/Y")
-    print("  PgUp/PgDn : Jog Z (Height)")
-    print("  'D'       : Set DROP-OFF Location")
-    print("  'A'       : Start/Stop AUTO MODE")
+    print("  WASD      : Jog X/Y (Planar)")
+    print("  Q / E     : Jog Z (Up / Down)")
+    print("  'V'       : Toggle Vacuum (Suction)")
+    print("  'G'       : Toggle Gripper")
+    print("  'B'       : Blow Air (Hold)")
+    print("  'X'       : Set DROP-OFF Location")
+    print("  SPACE     : Start/Stop AUTO MODE")
     print("  'C'       : Record Calibration Point")
     print("  'M'       : Calculate Matrix")
-    print("  'Q'       : Quit")
+    print("  ESC       : Quit")
 
     last_jog = None
     last_suction_state = False
     last_blow_state = False
     last_gripper_state = False
 
-    # Variables for the Snapshot Logic
     annotated_frame = None
     best_cube_pixel = None
     best_cube_robot = None
@@ -198,17 +215,17 @@ def main():
                 robot.KUKA_WriteVar('goZDown', False)
 
                 if jog_command == 'up':
-                    robot.KUKA_WriteVar('goUp', True)
+                    robot.KUKA_WriteVar('goUp', True)  # W
                 elif jog_command == 'down':
-                    robot.KUKA_WriteVar('goDown', True)
+                    robot.KUKA_WriteVar('goDown', True)  # S
                 elif jog_command == 'left':
-                    robot.KUKA_WriteVar('goLeft', True)
+                    robot.KUKA_WriteVar('goLeft', True)  # A
                 elif jog_command == 'right':
-                    robot.KUKA_WriteVar('goRight', True)
+                    robot.KUKA_WriteVar('goRight', True)  # D
                 elif jog_command == 'z_up':
-                    robot.KUKA_WriteVar('goZUp', True)
+                    robot.KUKA_WriteVar('goZUp', True)  # Q
                 elif jog_command == 'z_down':
-                    robot.KUKA_WriteVar('goZDown', True)
+                    robot.KUKA_WriteVar('goZDown', True)  # E
 
                 last_jog = jog_command
 
@@ -232,50 +249,78 @@ def main():
 
                 annotated_frame = frame.copy()
 
+                # --- COLLECT & SORT CUBES ---
+                detected_cubes = []
                 for result in results:
                     obbs = result.obb
                     if obbs is not None:
                         for obb in obbs:
                             box = obb.xywhr[0].cpu().numpy()
-                            cx, cy, w, h, rot = box  # rot is in Radians
+                            cx, cy, w, h, rot = box
                             rot_deg = math.degrees(rot)
+                            detected_cubes.append({
+                                'cx': cx, 'cy': cy, 'w': w, 'h': h, 'rot': rot, 'rot_deg': rot_deg
+                            })
 
-                            # Draw Box
-                            rect_pts = cv2.boxPoints(((cx, cy), (w, h), rot_deg))
-                            rect_pts = np.int32(rect_pts)
-                            cv2.drawContours(annotated_frame, [rect_pts], 0, (0, 255, 0), 2)
+                # Sort Left to Right
+                detected_cubes.sort(key=lambda c: c['cx'])
 
-                            # Draw Center
-                            cv2.circle(annotated_frame, (int(cx), int(cy)), 5, (0, 0, 255), -1)
+                # Draw Calibration Status Message
+                num_cubes = len(detected_cubes)
+                if num_cubes < 4:
+                    cv2.putText(annotated_frame, f"WARNING: Found {num_cubes}/4 Cubes", (10, 90),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                else:
+                    cv2.putText(annotated_frame, f"Calibration Ready: {num_cubes} Cubes", (10, 90),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-                            # --- VISUALIZATION RESTORED ---
-                            # Draw Orientation Line (Blue)
-                            line_len = 40
-                            end_x = int(cx + line_len * math.cos(rot))
-                            end_y = int(cy + line_len * math.sin(rot))
-                            cv2.line(annotated_frame, (int(cx), int(cy)), (end_x, end_y), (255, 0, 0), 2)
+                # Process Sorted Cubes
+                for i, cube in enumerate(detected_cubes):
+                    cx, cy = cube['cx'], cube['cy']
+                    w, h = cube['w'], cube['h']
+                    rot = cube['rot']
+                    rot_deg = cube['rot_deg']
 
-                            # Draw Angle Text
-                            angle_text = f"{int(rot_deg)} deg"
-                            cv2.putText(annotated_frame, angle_text, (int(cx), int(cy)),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                    # Draw Box
+                    rect_pts = cv2.boxPoints(((cx, cy), (w, h), rot_deg))
+                    rect_pts = np.int32(rect_pts)
+                    cv2.drawContours(annotated_frame, [rect_pts], 0, (0, 255, 0), 2)
 
-                            # Find Best Cube Logic
-                            dist = np.sqrt((cx - screen_center[0]) ** 2 + (cy - screen_center[1]) ** 2)
-                            if dist < min_dist:
-                                min_dist = dist
-                                best_cube_pixel = (cx, cy)
-                                best_cube_rot = rot_deg
+                    # Draw ID Number (Purple, Large)
+                    cv2.putText(annotated_frame, f"#{i + 1}", (int(cx) - 40, int(cy) - 40),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 255), 3)
 
-                            # Draw Robot Coords (Cyan) if Calibrated
-                            if calib.is_calibrated:
-                                robot_coord = calib.pixel_to_robot(cx, cy)
-                                if robot_coord is not None:
-                                    if dist == min_dist:
-                                        best_cube_robot = robot_coord
-                                    coord_text = f"X:{robot_coord[0]:.0f} Y:{robot_coord[1]:.0f}"
-                                    cv2.putText(annotated_frame, coord_text, (int(cx), int(cy) - 30),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                    # Draw Center
+                    cv2.circle(annotated_frame, (int(cx), int(cy)), 5, (0, 0, 255), -1)
+
+                    # Draw Orientation Line & Text
+                    line_len = 40
+                    end_x = int(cx + line_len * math.cos(rot))
+                    end_y = int(cy + line_len * math.sin(rot))
+                    cv2.line(annotated_frame, (int(cx), int(cy)), (end_x, end_y), (255, 0, 0), 2)
+
+                    angle_text = f"{int(rot_deg)} deg"
+                    cv2.putText(annotated_frame, angle_text, (int(cx), int(cy)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
+                    # Best Cube Logic (Closest to center)
+                    dist = np.sqrt((cx - screen_center[0]) ** 2 + (cy - screen_center[1]) ** 2)
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_cube_pixel = (cx, cy)
+                        best_cube_rot = rot_deg
+
+                    # Draw Robot Coords
+                    if calib.is_calibrated:
+                        robot_coord = calib.pixel_to_robot(cx, cy)
+                        if robot_coord is not None:
+                            # If this is the closest cube, save its Real World Coords
+                            if dist == min_dist:
+                                best_cube_robot = robot_coord
+
+                            coord_text = f"X:{robot_coord[0]:.0f} Y:{robot_coord[1]:.0f}"
+                            cv2.putText(annotated_frame, coord_text, (int(cx), int(cy) - 30),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
                 # Center Crosshair
                 cv2.line(annotated_frame, (screen_center[0] - 20, screen_center[1]),
@@ -345,8 +390,8 @@ def main():
             calib.compute_matrix()
         elif key == ord('r'):
             calib.reset()
-        elif key == ord('q'):
-            app_running = False
+        elif key == 27:
+            app_running = False  # ESC key
 
     if robot:
         robot.KUKA_WriteVar('vacuumOn', False)

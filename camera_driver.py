@@ -25,12 +25,17 @@ class CameraHandler:
                     self.camera.Connect()
                     self.camera.f.ExposureTime.Set(10000)
 
-                    # FIX: Force the camera to send Mono8 (Grayscale) to be consistent
-                    # If your camera supports Color, you can change this to 'BGR8'
+                    # --- FIX 1: Force Mono8 (Grayscale) ---
                     if hasattr(self.camera.f, 'PixelFormat'):
                         self.camera.f.PixelFormat.SetString('Mono8')
 
-                    print("✅ Baumer Camera Connected.")
+                    # This stops the camera from streaming video.
+                    # It will only take a photo when we call .Execute()
+                    if hasattr(self.camera.f, 'TriggerMode'):
+                        self.camera.f.TriggerMode.SetString('On')
+                        self.camera.f.TriggerSource.SetString('Software')
+
+                    print("✅ Baumer Camera Connected (Software Trigger Mode).")
                 except Exception as e:
                     print(f"⚠️ Could not connect to Baumer Camera: {e}")
                     print("   -> Falling back to Webcam/Simulation.")
@@ -48,21 +53,22 @@ class CameraHandler:
         """
         if not self.use_simulation and self.camera.IsConnected():
             try:
+                # Tell the camera to snap the photo NOW
+                if hasattr(self.camera.f, 'TriggerSoftware'):
+                    self.camera.f.TriggerSoftware.Execute()
+
+                # Wait for the image to arrive (Timeout default is usually 1000ms)
                 image = self.camera.GetImage()
                 img_np = image.GetNPArray()
 
-                # --- SHAPE HANDLING FIX ---
-                # Case 1: Shape is (H, W) -> Simple Grayscale
+                # --- SHAPE HANDLING ---
+                # Case 1: (H, W) -> Grayscale
                 if len(img_np.shape) == 2:
                     img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
 
-                # Case 2: Shape is (H, W, 1) -> Grayscale with explicit channel dim
+                # Case 2: (H, W, 1) -> Grayscale with channel dim
                 elif len(img_np.shape) == 3 and img_np.shape[2] == 1:
-                    # Squeeze the last dimension to make it (H, W), then convert
                     img_np = cv2.cvtColor(img_np.squeeze(-1), cv2.COLOR_GRAY2BGR)
-
-                # Case 3: Shape is (H, W, 3) -> Already Color (BGR or RGB)
-                # No action needed usually, unless Bayer pattern
 
                 return img_np
 
@@ -77,7 +83,7 @@ class CameraHandler:
                 ret, frame = self.cap.read()
 
             if frame is not None:
-                # Simulation: Color -> Gray -> BGR to match Industrial look
+                # Simulation: Color -> Gray -> BGR
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 frame = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
