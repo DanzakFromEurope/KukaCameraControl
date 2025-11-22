@@ -1,0 +1,5 @@
+/cube_dataset
+/runs
+inference_output.mp4
+inference_result.png
+yolov8n-obb.pt
