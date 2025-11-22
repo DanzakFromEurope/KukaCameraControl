@@ -1,10 +1,9 @@
 from py_openshowvar import openshowvar
 import time
+import socket
+
 
 class KUKA_Handler:
-    """
-    Class implementing openshowvar and making it more user-friendly
-    """
     def __init__(self, ipAddress, port):
         self.connected = False
         self.ipAddress = ipAddress
@@ -13,76 +12,123 @@ class KUKA_Handler:
 
     def KUKA_Open(self):
         if self.connected == False:
-            self.client = openshowvar(self.ipAddress, self.port)
-            res = self.client.can_connect
-
-            if res == True:
-                print('Connection is established!')
-                self.connected = True
-                return True
-            else:
-                print('Connection is broken! Check configuration or restart C3_Server at KUKA side.')
+            original_timeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(5.0)
+            try:
+                print(f"Attempting to connect to {self.ipAddress}:{self.port}...")
+                self.client = openshowvar(self.ipAddress, self.port)
+                res = self.client.can_connect
+                if res == True:
+                    print('Connection is established!')
+                    self.connected = True
+                    return True
+                else:
+                    self.connected = False
+                    return False
+            except Exception as e:
+                print(f"❌ Connection Failed: {e}")
                 self.connected = False
                 return False
+            finally:
+                socket.setdefaulttimeout(original_timeout)
         else:
             print('Connection is ready!')
 
     def KUKA_ReadVar(self, var):
         if self.connected:
-            res = self.client.read(var, debug=False)
-            if res == b'TRUE':
-                return True
-            elif res == b'FALSE':
+            try:
+                res = self.client.read(var, debug=False)
+                if res == b'TRUE':
+                    return True
+                elif res == b'FALSE':
+                    return False
+                else:
+                    return res
+            except:
+                self.connected = False
                 return False
-            else:
-                return res
-        else:
-            return False
+        return False
 
     def KUKA_WriteVar(self, var, value):
         if self.connected:
-            self.client.write(var, str(value))
-            return True
-        else:
-            return False
+            try:
+                self.client.write(var, str(value))
+                return True
+            except:
+                self.connected = False
+                return False
+        return False
 
     def KUKA_Close(self):
-        if self.connected == True:
-            self.client.close()
+        if self.connected:
+            try:
+                self.client.close()
+            except:
+                pass
             self.connected = False
             return True
-
-        else:
-            return False
+        return False
 
 
+# --- NEW: DEBUG MOCK CLASS ---
+class KUKA_Mock:
+    """
+    Simulates a KUKA robot for testing without hardware.
+    """
 
-# # Use of openshowvar without KUKA_Handler
-# robot = openshowvar('192.168.1.152',7000)
-#
-# # program_speed = robot.read('$OV_PRO',debug=True)
-# # print(int(program_speed.decode())) # reading the value of system variable, decoding it to string and retyping to integer
-# #
-# # new_advance = '3'
-# # robot.write('$ADVANCE',new_advance,debug=True) # Writing new value to the system variable, must be type string
-#
-# program_speed =robot.read('pyposition',debug=False)
-# print(program_speed.decode()) # Reading a value of a global variable, must be declared in $config.dat
-#
-# value = '{POS: X 7.38167620, Y -359.959778, Z 418.508301, A 90.0001526, B 29.9999981, C 179.999863}'
-# robot.write('pyposition',value,debug=False)  # Writing new value to the global variable, must be declared in $config.dat
-#
-# robot.close()  #closing connection with openshowvar
-# exit()
-# ###############################
-#
-#
-# robot = KUKA_Handler('192.168.1.152', 7000) # Using pyopenshowvar with the help of KUKA_Handler
-# robot.KUKA_Open() # opening connection
-# value_to_send = 5
-# robot.KUKA_WriteVar('My_global_variable', value_to_send) # Writing a global variable to robot, it must be declared in $config.dat
-# for i in range(0,30):
-#     recieved_value = robot.KUKA_ReadVar('$POS_ACT') # reading system variable every one second
-#     print(recieved_value)
-#     time.sleep(1)
-# robot.KUKA_Close()
+    def __init__(self):
+        self.connected = False
+        self.vars = {
+            'goUp': 'FALSE', 'goDown': 'FALSE', 'goLeft': 'FALSE', 'goRight': 'FALSE',
+            'goZUp': 'FALSE', 'goZDown': 'FALSE',
+            'vacuumOn': 'FALSE', 'blowOn': 'FALSE', 'gripperClose': 'FALSE',
+            'doPick': 'FALSE',
+            # Virtual Position (Starts at 0,0,100)
+            'x': 0.0, 'y': 0.0, 'z': 100.0
+        }
+        self.last_update = time.time()
+
+    def KUKA_Open(self):
+        print("⚠️ STARTED IN DEBUG/MOCK MODE (No Real Robot)")
+        self.connected = True
+        return True
+
+    def KUKA_ReadVar(self, var):
+        # Simulate Movement Physics
+        now = time.time()
+        dt = now - self.last_update
+        self.last_update = now
+        speed = 50.0 * dt  # 50mm/sec simulation speed
+
+        if self.vars['goUp'] == 'TRUE': self.vars['x'] += speed
+        if self.vars['goDown'] == 'TRUE': self.vars['x'] -= speed
+        if self.vars['goLeft'] == 'TRUE': self.vars['y'] += speed
+        if self.vars['goRight'] == 'TRUE': self.vars['y'] -= speed
+
+        # --- Z AXIS SIMULATION ---
+        if self.vars['goZUp'] == 'TRUE': self.vars['z'] += speed
+        if self.vars['goZDown'] == 'TRUE': self.vars['z'] -= speed
+
+        if var == '$POS_ACT':
+            return f"{{E6POS: X {self.vars['x']:.2f}, Y {self.vars['y']:.2f}, Z {self.vars['z']:.2f}, A 0, B 0, C 0}}"
+
+        val = self.vars.get(var, 'FALSE')
+        if val == 'TRUE': return True
+        if val == 'FALSE': return False
+        return val
+
+    def KUKA_WriteVar(self, var, value):
+        str_val = 'TRUE' if value is True else 'FALSE' if value is False else str(value)
+        self.vars[var] = str_val
+
+        if var == 'doPick' and value is True:
+            print("   [MOCK] Received Pick Command... Simulating work...")
+            time.sleep(1.0)
+            self.vars['doPick'] = 'FALSE'
+            print("   [MOCK] Task Finished.")
+
+        return True
+
+    def KUKA_Close(self):
+        self.connected = False
+        return True
