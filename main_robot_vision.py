@@ -12,7 +12,7 @@ import camera_driver
 import calibration_core
 
 # --- CONFIGURATION ---
-DEBUG_MODE = True  # <--- SET TO TRUE TO TEST WITHOUT ROBOT
+DEBUG_MODE = True
 ROBOT_IP = '192.168.1.152'
 ROBOT_PORT = 7000
 YOLO_MODEL = 'best.pt'
@@ -56,6 +56,30 @@ def parse_kuka_pos(pos_string):
     except:
         pass
     return 0.0, 0.0, 0.0
+
+
+def print_instructions():
+    print("\n" + "=" * 40)
+    print("       🤖 ROBOT VISION SYSTEM v1.0       ")
+    print("=" * 40)
+    print("MOVEMENT:")
+    print("  WASD      : Jog X/Y (Planar)")
+    print("  Q / E     : Jog Z (Up / Down)")
+    print("-" * 40)
+    print("TOOLS:")
+    print("  'V'       : Toggle Vacuum (Suction)")
+    print("  'G'       : Toggle Gripper")
+    print("  'B'       : Blow Air (Hold)")
+    print("-" * 40)
+    print("AUTOMATION:")
+    print("  'X'       : Set DROP-OFF Location")
+    print("  SPACE     : Start/Stop AUTO MODE")
+    print("-" * 40)
+    print("SYSTEM:")
+    print("  'C'       : Start/Continue Calibration")
+    print("  'M'       : Force Matrix Re-calc")
+    print("  ESC       : Quit Program")
+    print("=" * 40 + "\n")
 
 
 def keyboard_listener():
@@ -112,21 +136,89 @@ def keyboard_listener():
 
 
 def draw_z_visualization(img_height, current_z):
-    width = 150
+    width = 100  # Reduced width for right panel
     panel = np.zeros((img_height, width, 3), dtype=np.uint8)
     max_z = 300
     scale = img_height / max_z
     safe_y = int(img_height - (200 * scale))
     cv2.line(panel, (0, safe_y), (width, safe_y), (0, 255, 255), 1)
-    cv2.putText(panel, "Safe Z", (5, safe_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+    cv2.putText(panel, "Safe", (5, safe_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
     table_y = int(img_height - (0 * scale)) - 5
     cv2.line(panel, (0, table_y), (width, table_y), (0, 255, 0), 2)
     cv2.putText(panel, "Table", (5, table_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
     z_pixel = int(img_height - (current_z * scale))
     z_pixel = max(10, min(img_height - 10, z_pixel))
-    cv2.rectangle(panel, (40, z_pixel - 10), (110, z_pixel + 10), (255, 100, 0), -1)
-    cv2.putText(panel, f"Z:{current_z:.0f}", (50, z_pixel + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    cv2.rectangle(panel, (20, z_pixel - 10), (80, z_pixel + 10), (255, 100, 0), -1)
+    cv2.putText(panel, f"Z:{current_z:.0f}", (25, z_pixel + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
     return panel
+
+
+# --- NEW: SIDEBAR VISUALIZATION ---
+def draw_sidebar(img_height, detected_cubes, robot_pos, status_flags, calib_status):
+    width = 250
+    sidebar = np.zeros((img_height, width, 3), dtype=np.uint8)
+
+    # Font settings
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    white = (255, 255, 255)
+    green = (0, 255, 0)
+    yellow = (0, 255, 255)
+
+    y = 30
+    cv2.putText(sidebar, "ROBOT STATUS", (10, y), font, 0.6, white, 2)
+    y += 25
+    cv2.putText(sidebar, f"X: {robot_pos['x']:.1f}", (10, y), font, 0.5, white, 1)
+    y += 20
+    cv2.putText(sidebar, f"Y: {robot_pos['y']:.1f}", (10, y), font, 0.5, white, 1)
+    y += 20
+    cv2.putText(sidebar, f"Z: {robot_pos['z']:.1f}", (10, y), font, 0.5, white, 1)
+
+    y += 30
+    cv2.putText(sidebar, "TOOLS", (10, y), font, 0.6, white, 2)
+    y += 25
+    vac_str = "ON" if status_flags['suction'] else "OFF"
+    vac_col = green if status_flags['suction'] else (100, 100, 100)
+    cv2.putText(sidebar, f"Vacuum: {vac_str}", (10, y), font, 0.5, vac_col, 1)
+    y += 20
+    grip_str = "CLOSED" if status_flags['gripper'] else "OPEN"
+    grip_col = green if status_flags['gripper'] else (100, 100, 100)
+    cv2.putText(sidebar, f"Gripper: {grip_str}", (10, y), font, 0.5, grip_col, 1)
+
+    y += 30
+    cv2.putText(sidebar, "MODE", (10, y), font, 0.6, white, 2)
+    y += 25
+    mode_str = "AUTO" if status_flags['auto'] else "MANUAL"
+    mode_col = green if status_flags['auto'] else yellow
+    cv2.putText(sidebar, mode_str, (10, y), font, 0.7, mode_col, 2)
+
+    if status_flags['busy']:
+        y += 25
+        cv2.putText(sidebar, "BUSY (Moving)", (10, y), font, 0.5, (0, 0, 255), 1)
+
+    y += 40
+    cv2.putText(sidebar, "DETECTED CUBES", (10, y), font, 0.6, white, 2)
+    y += 10
+
+    if not calib_status:
+        y += 20
+        cv2.putText(sidebar, "Not Calibrated!", (10, y), font, 0.5, (0, 0, 255), 1)
+    elif not detected_cubes:
+        y += 20
+        cv2.putText(sidebar, "No Cubes Found", (10, y), font, 0.5, (100, 100, 100), 1)
+    else:
+        for i, cube in enumerate(detected_cubes):
+            y += 25
+            # If we have robot coords (from calibration), show them
+            if 'rx' in cube:
+                txt = f"#{i + 1}: {cube['rx']:.0f}, {cube['ry']:.0f}"
+                col = green
+            else:
+                txt = f"#{i + 1}: (Pixel Only)"
+                col = (100, 100, 100)
+
+            cv2.putText(sidebar, txt, (10, y), font, 0.5, col, 1)
+
+    return sidebar
 
 
 def main():
@@ -140,7 +232,6 @@ def main():
         print("⚠️ DEBUG MODE: Using Virtual Robot")
         robot = KUKA_handler.KUKA_Mock()
         robot.KUKA_Open()
-        # --- NEW: Auto-load Mock Calibration for Blue Dot ---
         calib.load_mock_calibration()
     else:
         print("🤖 Connecting to Robot...")
@@ -150,7 +241,6 @@ def main():
         except Exception as e:
             print(f"⚠️ Error: {e}")
             robot = None
-        # Load real calibration if available
         calib.load()
 
     print("📷 Initializing Camera...")
@@ -166,8 +256,7 @@ def main():
     kb_thread = threading.Thread(target=keyboard_listener, daemon=True)
     kb_thread.start()
 
-    print("\n--- SYSTEM READY ---")
-    print("  'C' Key : Starts Snapshot Calibration")
+    print_instructions()
 
     last_jog = None
     last_suction_state = False
@@ -177,6 +266,9 @@ def main():
     best_cube_robot = None
     best_cube_rot = 0
     settle_timer = 0
+
+    # For sidebar list
+    sidebar_cubes = []
 
     while app_running:
         if robot and robot.connected:
@@ -270,6 +362,7 @@ def main():
                                     {'cx': cx, 'cy': cy, 'w': w, 'h': h, 'rot': rot, 'rot_deg': rot_deg})
 
                     detected_cubes = sort_cubes_reading_order(detected_cubes)
+                    sidebar_cubes = []  # Clear list for sidebar update
 
                     for i, cube in enumerate(detected_cubes):
                         cx, cy = cube['cx'], cube['cy']
@@ -285,21 +378,23 @@ def main():
                             min_dist = dist
                             best_cube_robot = None
 
+                        # Store robot coords for sidebar
+                        cube_info = {'id': i + 1}
+
                         if calib.is_calibrated:
                             robot_coord = calib.pixel_to_robot(cx, cy)
                             if robot_coord is not None:
                                 if dist == min_dist: best_cube_robot = robot_coord
+
+                                # Add to list for sidebar
+                                cube_info['rx'] = robot_coord[0]
+                                cube_info['ry'] = robot_coord[1]
+
                                 txt = f"X:{robot_coord[0]:.0f} Y:{robot_coord[1]:.0f}"
                                 cv2.putText(annotated_frame, txt, (int(cx), int(cy) - 30), cv2.FONT_HERSHEY_SIMPLEX,
                                             0.6, (0, 255, 255), 2)
 
-                    if auto_mode:
-                        status = "MOVING" if robot_is_busy else "SCANNING"
-                        cv2.putText(annotated_frame, f"STATUS: {status}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                                    (0, 255, 0), 2)
-                    else:
-                        cv2.putText(annotated_frame, "MODE: MANUAL", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                                    (255, 255, 0), 2)
+                        sidebar_cubes.append(cube_info)
 
                     if DEBUG_MODE:
                         cv2.putText(annotated_frame,
@@ -308,27 +403,34 @@ def main():
 
         if annotated_frame is None: annotated_frame = np.zeros((600, 800, 3), dtype=np.uint8)
 
-        # --- NEW: ROBOT POS VISUALIZATION (BLUE CROSS) ---
-        # Draws the simulated (or real) robot position as a Blue Crosshair on the camera image
         if calib.is_calibrated:
             pixel_pos = calib.robot_to_pixel(current_robot_pos['x'], current_robot_pos['y'])
-
             if pixel_pos is not None:
                 pu, pv = int(pixel_pos[0]), int(pixel_pos[1])
-
-                # Only draw if within screen bounds
                 if 0 <= pu < annotated_frame.shape[1] and 0 <= pv < annotated_frame.shape[0]:
                     cv2.drawMarker(annotated_frame, (pu, pv), (255, 0, 0), cv2.MARKER_CROSS, 30, 3)
                     cv2.circle(annotated_frame, (pu, pv), 10, (255, 0, 0), 2)
                     cv2.putText(annotated_frame, "ROBOT", (pu + 15, pv), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
-        # --- LIVE STATUS OVERLAY (X,Y,Z) ---
-        cv2.putText(annotated_frame, f"POS: X{current_robot_pos['x']:.1f} Y{current_robot_pos['y']:.1f}", (10, 560),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        # --- CONSTRUCT UI ---
+        # 1. Status Flags
+        status_flags = {
+            'suction': suction_active,
+            'gripper': gripper_closed,
+            'auto': auto_mode,
+            'busy': robot_is_busy
+        }
 
-        # --- Z-AXIS SIDE PANEL ---
+        # 2. Generate Sidebar
+        sidebar = draw_sidebar(annotated_frame.shape[0], sidebar_cubes, current_robot_pos, status_flags,
+                               calib.is_calibrated)
+
+        # 3. Generate Z-Panel
         z_panel = draw_z_visualization(annotated_frame.shape[0], current_robot_pos['z'])
-        final_display = np.hstack((annotated_frame, z_panel))
+
+        # 4. Combine: [Sidebar] [Camera Feed] [Z-Panel]
+        final_display = np.hstack((sidebar, annotated_frame, z_panel))
+
         cv2.imshow("Robot Vision Control", final_display)
 
         if calibration_trigger:
@@ -367,6 +469,7 @@ def main():
                     success = calib.compute_matrix()
                     if success:
                         print("🎉 CALIBRATION COMPLETE!")
+                        print_instructions()
                         calib_mode_active = False
                         calib_snapshot = None
                     else:
