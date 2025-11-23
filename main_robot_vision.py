@@ -12,7 +12,7 @@ import camera_driver
 import calibration_core
 
 # --- CONFIGURATION ---
-DEBUG_MODE = True
+DEBUG_MODE = True  # <--- SET TO TRUE TO TEST WITHOUT ROBOT
 ROBOT_IP = '192.168.1.152'
 ROBOT_PORT = 7000
 YOLO_MODEL = 'best.pt'
@@ -26,6 +26,7 @@ app_running = True
 drop_off_pos = None
 auto_mode = False
 robot_is_busy = False
+live_view_active = False
 
 calib_mode_active = False
 calib_step = 0
@@ -73,7 +74,8 @@ def print_instructions():
     print("-" * 40)
     print("AUTOMATION:")
     print("  'X'       : Set DROP-OFF Location")
-    print("  SPACE     : Start/Stop AUTO MODE")
+    print("  ENTER     : Start/Stop AUTO MODE")
+    print("  'L'       : Toggle Live View (Watch while moving)")
     print("-" * 40)
     print("SYSTEM:")
     print("  'C'       : Start/Continue Calibration")
@@ -83,10 +85,11 @@ def print_instructions():
 
 
 def keyboard_listener():
-    global jog_command, app_running, calibration_trigger, suction_active, blow_active, gripper_closed, drop_off_pos, auto_mode
+    global jog_command, app_running, calibration_trigger, suction_active, blow_active, gripper_closed, drop_off_pos, auto_mode, live_view_active
 
+    # --- ON PRESS: Only Continuous Actions (Movement / Holding) ---
     def on_press(key):
-        global jog_command, calibration_trigger, blow_active, auto_mode, drop_off_pos
+        global jog_command, blow_active
         try:
             if hasattr(key, 'char'):
                 char = key.char.lower()
@@ -104,30 +107,45 @@ def keyboard_listener():
                     jog_command = 'z_down'
                 elif char == 'b':
                     blow_active = True
-                elif char == 'c':
-                    calibration_trigger = True
-                elif char == 'x':
-                    drop_off_pos = (current_robot_pos['x'], current_robot_pos['y'])
-                    print(f"✅ Drop-off Set: {drop_off_pos}")
-                elif char == ' ':
-                    if calib_mode_active:
-                        print("⚠️ Cannot start Auto while Calibrating!")
-                    elif drop_off_pos is None:
-                        print("⚠️ Set Drop-off ('X') first!")
-                    else:
-                        auto_mode = not auto_mode
-                        print(f"🤖 Auto Mode: {'ON' if auto_mode else 'OFF'}")
         except:
             pass
 
+    # --- ON RELEASE: Toggle Actions (Single Shot) ---
     def on_release(key):
-        global jog_command, suction_active, blow_active, gripper_closed
+        global jog_command, suction_active, blow_active, gripper_closed, calibration_trigger, drop_off_pos, auto_mode, live_view_active
+
+        # 1. Stop Movement
         if hasattr(key, 'char'):
             char = key.char.lower()
             if char in ['w', 's', 'a', 'd', 'q', 'e']: jog_command = None
-            if char == 'v': suction_active = not suction_active
             if char == 'b': blow_active = False
+
+            # 2. Tool Toggles
+            if char == 'v': suction_active = not suction_active
             if char == 'g': gripper_closed = not gripper_closed
+
+            # 3. System Commands (Moved here to prevent double-trigger)
+            if char == 'c':
+                calibration_trigger = True
+
+            if char == 'x':
+                drop_off_pos = (current_robot_pos['x'], current_robot_pos['y'])
+                print(f"✅ Drop-off Set: {drop_off_pos}")
+
+            if char == 'l':
+                live_view_active = not live_view_active
+                print(f"📺 Live View: {'ON' if live_view_active else 'OFF'}")
+
+        # 4. Special Keys
+        if key == keyboard.Key.enter:
+            if calib_mode_active:
+                print("⚠️ Cannot start Auto while Calibrating!")
+            elif drop_off_pos is None:
+                print("⚠️ Set Drop-off ('X') first!")
+            else:
+                auto_mode = not auto_mode
+                print(f"🤖 Auto Mode: {'ON' if auto_mode else 'OFF'}")
+
         if key == keyboard.Key.esc: return False
 
     with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
@@ -136,7 +154,7 @@ def keyboard_listener():
 
 
 def draw_z_visualization(img_height, current_z):
-    width = 100  # Reduced width for right panel
+    width = 100
     panel = np.zeros((img_height, width, 3), dtype=np.uint8)
     max_z = 300
     scale = img_height / max_z
@@ -153,12 +171,10 @@ def draw_z_visualization(img_height, current_z):
     return panel
 
 
-# --- NEW: SIDEBAR VISUALIZATION ---
 def draw_sidebar(img_height, detected_cubes, robot_pos, status_flags, calib_status):
     width = 250
     sidebar = np.zeros((img_height, width, 3), dtype=np.uint8)
 
-    # Font settings
     font = cv2.FONT_HERSHEY_SIMPLEX
     white = (255, 255, 255)
     green = (0, 255, 0)
@@ -187,9 +203,13 @@ def draw_sidebar(img_height, detected_cubes, robot_pos, status_flags, calib_stat
     y += 30
     cv2.putText(sidebar, "MODE", (10, y), font, 0.6, white, 2)
     y += 25
-    mode_str = "AUTO" if status_flags['auto'] else "MANUAL"
-    mode_col = green if status_flags['auto'] else yellow
-    cv2.putText(sidebar, mode_str, (10, y), font, 0.7, mode_col, 2)
+    if status_flags['auto']:
+        mode_str = "AUTO (Live)" if status_flags['live'] else "AUTO (Snap)"
+        mode_col = green
+    else:
+        mode_str = "MANUAL"
+        mode_col = yellow
+    cv2.putText(sidebar, mode_str, (10, y), font, 0.6, mode_col, 2)
 
     if status_flags['busy']:
         y += 25
@@ -208,7 +228,6 @@ def draw_sidebar(img_height, detected_cubes, robot_pos, status_flags, calib_stat
     else:
         for i, cube in enumerate(detected_cubes):
             y += 25
-            # If we have robot coords (from calibration), show them
             if 'rx' in cube:
                 txt = f"#{i + 1}: {cube['rx']:.0f}, {cube['ry']:.0f}"
                 col = green
@@ -223,7 +242,7 @@ def draw_sidebar(img_height, detected_cubes, robot_pos, status_flags, calib_stat
 
 def main():
     global jog_command, app_running, calibration_trigger, current_robot_pos
-    global suction_active, blow_active, gripper_closed, auto_mode, robot_is_busy, drop_off_pos
+    global suction_active, blow_active, gripper_closed, auto_mode, robot_is_busy, drop_off_pos, live_view_active
     global calib_mode_active, calib_step, calib_stored_pixels, calib_snapshot
 
     calib = calibration_core.CalibrationSystem()
@@ -267,7 +286,6 @@ def main():
     best_cube_rot = 0
     settle_timer = 0
 
-    # For sidebar list
     sidebar_cubes = []
 
     while app_running:
@@ -337,6 +355,8 @@ def main():
             should_grab_frame = False
             if not auto_mode:
                 should_grab_frame = True
+            elif live_view_active:
+                should_grab_frame = True
             elif auto_mode and not robot_is_busy and time.time() > settle_timer:
                 should_grab_frame = True
 
@@ -362,7 +382,7 @@ def main():
                                     {'cx': cx, 'cy': cy, 'w': w, 'h': h, 'rot': rot, 'rot_deg': rot_deg})
 
                     detected_cubes = sort_cubes_reading_order(detected_cubes)
-                    sidebar_cubes = []  # Clear list for sidebar update
+                    sidebar_cubes = []
 
                     for i, cube in enumerate(detected_cubes):
                         cx, cy = cube['cx'], cube['cy']
@@ -378,22 +398,16 @@ def main():
                             min_dist = dist
                             best_cube_robot = None
 
-                        # Store robot coords for sidebar
                         cube_info = {'id': i + 1}
-
                         if calib.is_calibrated:
                             robot_coord = calib.pixel_to_robot(cx, cy)
                             if robot_coord is not None:
                                 if dist == min_dist: best_cube_robot = robot_coord
-
-                                # Add to list for sidebar
                                 cube_info['rx'] = robot_coord[0]
                                 cube_info['ry'] = robot_coord[1]
-
                                 txt = f"X:{robot_coord[0]:.0f} Y:{robot_coord[1]:.0f}"
                                 cv2.putText(annotated_frame, txt, (int(cx), int(cy) - 30), cv2.FONT_HERSHEY_SIMPLEX,
                                             0.6, (0, 255, 255), 2)
-
                         sidebar_cubes.append(cube_info)
 
                     if DEBUG_MODE:
@@ -412,26 +426,18 @@ def main():
                     cv2.circle(annotated_frame, (pu, pv), 10, (255, 0, 0), 2)
                     cv2.putText(annotated_frame, "ROBOT", (pu + 15, pv), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
-        # --- CONSTRUCT UI ---
-        # 1. Status Flags
-        status_flags = {
-            'suction': suction_active,
-            'gripper': gripper_closed,
-            'auto': auto_mode,
-            'busy': robot_is_busy
-        }
-
-        # 2. Generate Sidebar
+        status_flags = {'suction': suction_active, 'gripper': gripper_closed, 'auto': auto_mode, 'busy': robot_is_busy,
+                        'live': live_view_active}
         sidebar = draw_sidebar(annotated_frame.shape[0], sidebar_cubes, current_robot_pos, status_flags,
                                calib.is_calibrated)
-
-        # 3. Generate Z-Panel
         z_panel = draw_z_visualization(annotated_frame.shape[0], current_robot_pos['z'])
-
-        # 4. Combine: [Sidebar] [Camera Feed] [Z-Panel]
         final_display = np.hstack((sidebar, annotated_frame, z_panel))
 
         cv2.imshow("Robot Vision Control", final_display)
+
+        # --- HANDLE KEYS (GUI) ---
+        key = cv2.waitKey(1) & 0xFF
+        if key == 27: app_running = False  # ESC
 
         if calibration_trigger:
             calibration_trigger = False
@@ -477,6 +483,8 @@ def main():
                         calib_mode_active = False
 
         if auto_mode and not robot_is_busy and not calib_mode_active:
+            if not live_view_active: pass  # Logic check ok
+
             if should_grab_frame and calib.is_calibrated and drop_off_pos is not None and best_cube_robot is not None:
                 target_x, target_y = best_cube_robot
                 target_r = 0.0
@@ -491,9 +499,6 @@ def main():
                 robot.KUKA_WriteVar('dropPos', drop_str)
                 robot.KUKA_WriteVar('doPick', True)
                 robot_is_busy = True
-
-        key = cv2.waitKey(1) & 0xFF
-        if key == 27: app_running = False
 
     if robot:
         robot.KUKA_WriteVar('vacuumOn', False)
