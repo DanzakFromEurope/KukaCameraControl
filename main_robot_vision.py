@@ -134,10 +134,14 @@ def main():
     global suction_active, blow_active, gripper_closed, auto_mode, robot_is_busy, drop_off_pos
     global calib_mode_active, calib_step, calib_stored_pixels, calib_snapshot
 
+    calib = calibration_core.CalibrationSystem()
+
     if DEBUG_MODE:
         print("⚠️ DEBUG MODE: Using Virtual Robot")
         robot = KUKA_handler.KUKA_Mock()
         robot.KUKA_Open()
+        # --- NEW: Auto-load Mock Calibration for Blue Dot ---
+        calib.load_mock_calibration()
     else:
         print("🤖 Connecting to Robot...")
         try:
@@ -146,6 +150,8 @@ def main():
         except Exception as e:
             print(f"⚠️ Error: {e}")
             robot = None
+        # Load real calibration if available
+        calib.load()
 
     print("📷 Initializing Camera...")
     cam = camera_driver.CameraHandler(source="baumer")
@@ -156,9 +162,6 @@ def main():
     except:
         print(f"❌ Error: Could not load {YOLO_MODEL}")
         return
-
-    calib = calibration_core.CalibrationSystem()
-    calib.load()
 
     kb_thread = threading.Thread(target=keyboard_listener, daemon=True)
     kb_thread.start()
@@ -306,16 +309,18 @@ def main():
         if annotated_frame is None: annotated_frame = np.zeros((600, 800, 3), dtype=np.uint8)
 
         # --- NEW: ROBOT POS VISUALIZATION (BLUE CROSS) ---
-        if calib.is_calibrated and not calib_mode_active:
-            # Convert Current Robot X,Y -> Camera Pixel U,V
+        # Draws the simulated (or real) robot position as a Blue Crosshair on the camera image
+        if calib.is_calibrated:
             pixel_pos = calib.robot_to_pixel(current_robot_pos['x'], current_robot_pos['y'])
 
             if pixel_pos is not None:
                 pu, pv = int(pixel_pos[0]), int(pixel_pos[1])
-                # Draw Blue Crosshair showing where the robot is in camera space
-                cv2.drawMarker(annotated_frame, (pu, pv), (255, 0, 0), cv2.MARKER_CROSS, 30, 3)
-                cv2.circle(annotated_frame, (pu, pv), 10, (255, 0, 0), 2)
-                cv2.putText(annotated_frame, "ROBOT", (pu + 15, pv), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
+                # Only draw if within screen bounds
+                if 0 <= pu < annotated_frame.shape[1] and 0 <= pv < annotated_frame.shape[0]:
+                    cv2.drawMarker(annotated_frame, (pu, pv), (255, 0, 0), cv2.MARKER_CROSS, 30, 3)
+                    cv2.circle(annotated_frame, (pu, pv), 10, (255, 0, 0), 2)
+                    cv2.putText(annotated_frame, "ROBOT", (pu + 15, pv), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
         # --- LIVE STATUS OVERLAY (X,Y,Z) ---
         cv2.putText(annotated_frame, f"POS: X{current_robot_pos['x']:.1f} Y{current_robot_pos['y']:.1f}", (10, 560),
@@ -323,10 +328,7 @@ def main():
 
         # --- Z-AXIS SIDE PANEL ---
         z_panel = draw_z_visualization(annotated_frame.shape[0], current_robot_pos['z'])
-
-        # Combine (Horizontal Stack)
         final_display = np.hstack((annotated_frame, z_panel))
-
         cv2.imshow("Robot Vision Control", final_display)
 
         if calibration_trigger:

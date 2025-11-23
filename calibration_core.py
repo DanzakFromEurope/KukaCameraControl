@@ -8,7 +8,7 @@ class CalibrationSystem:
         self.pixel_points = []
         self.robot_points = []
         self.matrix = None
-        self.matrix_inv = None  # NEW: Inverse Matrix for Robot->Pixel
+        self.matrix_inv = None
         self.is_calibrated = False
         self.filename = "calibration_matrix.npy"
 
@@ -30,13 +30,8 @@ class CalibrationSystem:
             return False
 
         try:
-            # Forward Matrix (Pixel -> Robot)
             self.matrix, status = cv2.findHomography(pts_src, pts_dst)
-
-            # NEW: Inverse Matrix (Robot -> Pixel)
-            # We simply invert the forward matrix
             self.matrix_inv = np.linalg.inv(self.matrix)
-
         except Exception as e:
             print(f"❌ Matrix Calculation Error: {e}")
             return False
@@ -55,17 +50,37 @@ class CalibrationSystem:
         output_point = cv2.perspectiveTransform(input_point, self.matrix)
         return output_point[0][0]
 
-    # NEW FUNCTION
     def robot_to_pixel(self, x, y):
-        """
-        Converts Robot (x,y) back to Pixel (u,v) for visualization.
-        """
         if not self.is_calibrated or self.matrix_inv is None: return None
-
         input_point = np.array([[[x, y]]], dtype='float32')
         output_point = cv2.perspectiveTransform(input_point, self.matrix_inv)
-
         return output_point[0][0]
+
+    def load_mock_calibration(self, width=1920, height=1200):
+        """
+        DEBUG ONLY: Creates a fake matrix mapping Robot(0,0) to Image Center.
+        This allows the Blue Dot to appear without real calibration.
+        """
+        cx, cy = width / 2, height / 2
+
+        # Create a matrix where:
+        # Pixel U = Robot Y + Center X
+        # Pixel V = -Robot X + Center Y  (Assuming Robot X is "Up" on screen)
+        # This aligns WASD roughly with the screen for intuitive testing.
+
+        # Robot -> Pixel Matrix (Manual construction)
+        # [ [0, 1, cx], [-1, 0, cy], [0, 0, 1] ]
+        self.matrix_inv = np.array([
+            [0.0, 1.0, cx],  # Robot Y controls Screen X (Left/Right)
+            [-1.0, 0.0, cy],  # Robot X controls Screen Y (Up/Down)
+            [0.0, 0.0, 1.0]
+        ])
+
+        # Invert to get the standard matrix
+        self.matrix = np.linalg.inv(self.matrix_inv)
+
+        self.is_calibrated = True
+        print(f"⚠️ MOCK CALIBRATION LOADED (Center: {cx}, {cy})")
 
     def reset(self):
         self.pixel_points = []
@@ -84,7 +99,6 @@ class CalibrationSystem:
         if os.path.exists(self.filename):
             try:
                 self.matrix = np.load(self.filename)
-                # Calculate inverse immediately on load
                 self.matrix_inv = np.linalg.inv(self.matrix)
                 self.is_calibrated = True
                 print(f"📂 Calibration loaded from '{self.filename}'")
