@@ -5,3 +5,4 @@ inference_result.png
 yolov8n-obb.pt
 .idea
 .DS_store
+calibration_matrix.npy
