@@ -12,7 +12,7 @@ import camera_driver
 import calibration_core
 
 # --- CONFIGURATION ---
-DEBUG_MODE = True  # <--- SET TO TRUE TO TEST WITHOUT ROBOT
+DEBUG_MODE = True
 ROBOT_IP = '192.168.1.152'
 ROBOT_PORT = 7000
 YOLO_MODEL = 'best.pt'
@@ -69,7 +69,7 @@ def print_instructions():
     print("-" * 40)
     print("TOOLS:")
     print("  'V'       : Toggle Vacuum (Suction)")
-    print("  'G'       : Toggle Gripper")
+    print("  'G'       : Toggle Gripper (Holds the tool)")
     print("  'B'       : Blow Air (Hold)")
     print("-" * 40)
     print("AUTOMATION:")
@@ -87,7 +87,6 @@ def print_instructions():
 def keyboard_listener():
     global jog_command, app_running, calibration_trigger, suction_active, blow_active, gripper_closed, drop_off_pos, auto_mode, live_view_active
 
-    # --- ON PRESS: Only Continuous Actions (Movement / Holding) ---
     def on_press(key):
         global jog_command, blow_active
         try:
@@ -110,7 +109,6 @@ def keyboard_listener():
         except:
             pass
 
-    # --- ON RELEASE: Toggle Actions (Single Shot) ---
     def on_release(key):
         global jog_command, suction_active, blow_active, gripper_closed, calibration_trigger, drop_off_pos, auto_mode, live_view_active
 
@@ -121,12 +119,21 @@ def keyboard_listener():
             if char == 'b': blow_active = False
 
             # 2. Tool Toggles
-            if char == 'v': suction_active = not suction_active
-            if char == 'g': gripper_closed = not gripper_closed
+            if char == 'v':
+                suction_active = not suction_active
+                # If turning ON suction, ensure Gripper is CLOSED (Safety)
+                if suction_active and not gripper_closed:
+                    print("⚠️ AUTO-CLOSING Gripper to hold suction tool!")
+                    gripper_closed = True
 
-            # 3. System Commands (Moved here to prevent double-trigger)
-            if char == 'c':
-                calibration_trigger = True
+            if char == 'g':
+                # Safety: Don't open gripper if vacuum is holding something!
+                if gripper_closed and suction_active:
+                    print("❌ SAFETY LOCK: Cannot open gripper while Vacuum is ON!")
+                else:
+                    gripper_closed = not gripper_closed
+
+            if char == 'c': calibration_trigger = True
 
             if char == 'x':
                 drop_off_pos = (current_robot_pos['x'], current_robot_pos['y'])
@@ -136,15 +143,18 @@ def keyboard_listener():
                 live_view_active = not live_view_active
                 print(f"📺 Live View: {'ON' if live_view_active else 'OFF'}")
 
-        # 4. Special Keys
         if key == keyboard.Key.enter:
             if calib_mode_active:
                 print("⚠️ Cannot start Auto while Calibrating!")
             elif drop_off_pos is None:
                 print("⚠️ Set Drop-off ('X') first!")
             else:
-                auto_mode = not auto_mode
-                print(f"🤖 Auto Mode: {'ON' if auto_mode else 'OFF'}")
+                # Safety check before auto
+                if not gripper_closed:
+                    print("❌ Cannot start Auto: Gripper is OPEN! (Must hold tool)")
+                else:
+                    auto_mode = not auto_mode
+                    print(f"🤖 Auto Mode: {'ON' if auto_mode else 'OFF'}")
 
         if key == keyboard.Key.esc: return False
 
@@ -196,8 +206,8 @@ def draw_sidebar(img_height, detected_cubes, robot_pos, status_flags, calib_stat
     vac_col = green if status_flags['suction'] else (100, 100, 100)
     cv2.putText(sidebar, f"Vacuum: {vac_str}", (10, y), font, 0.5, vac_col, 1)
     y += 20
-    grip_str = "CLOSED" if status_flags['gripper'] else "OPEN"
-    grip_col = green if status_flags['gripper'] else (100, 100, 100)
+    grip_str = "CLOSED (Tool)" if status_flags['gripper'] else "OPEN"
+    grip_col = green if status_flags['gripper'] else (0, 0, 255)  # Red if open (Warning)
     cv2.putText(sidebar, f"Gripper: {grip_str}", (10, y), font, 0.5, grip_col, 1)
 
     y += 30
