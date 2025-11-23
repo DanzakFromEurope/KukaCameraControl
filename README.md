@@ -107,9 +107,6 @@ A new program file, designated PythonControl.src, must be created within the R1/
 
     DEF PythonControl( )  
          
-       ; \--- INITIALIZATION \---  
-       INI  
-         
        ; Initialize standard motion parameters  
        BAS(\#INITMOV,0)  
          
